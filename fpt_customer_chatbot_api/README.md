@@ -54,6 +54,30 @@ pip install -r requirements.txt
 uvicorn fpt_customer_chatbot_api.main:app --reload
 ```
 
+### 5. GitHub Actions Deployment
+Add these repository secrets before running `.github/workflows/deploy.yml`:
+
+```text
+AWS_ACCESS_KEY_ID
+AWS_SECRET_ACCESS_KEY
+EC2_HOST
+EC2_SSH_KEY
+DATABASE_URL
+S3_BUCKET_NAME
+```
+
+Optional secrets:
+
+```text
+SECRET_KEY
+OPENAI_API_KEY
+TAVILY_API_KEY
+```
+
+The workflow SSHes into the EC2 instance, pulls the latest `main` branch, writes
+`fpt_customer_chatbot_api/.env`, rebuilds the Docker image on EC2, restarts the
+container, and verifies `http://localhost:8000/`.
+
 ---
 
 ## 📖 API Documentation

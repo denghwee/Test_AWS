@@ -8,3 +8,6 @@ __pycache__/
 *.db
 *.sqlite
 *.sqlite3
+*.pem
+fastapi_final_deploy.tar.gz
+deploy_staging/
