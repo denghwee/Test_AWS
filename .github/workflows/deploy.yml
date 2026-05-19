@@ -21,6 +21,7 @@ jobs:
           EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
         run: |
           set -euo pipefail
+          EC2_HOST="$(printf '%s' "$EC2_HOST" | tr -d '\r\n[:space:]')"
           test -n "$EC2_HOST" || { echo "Missing EC2_HOST repository secret"; exit 1; }
           test -n "$EC2_SSH_KEY" || { echo "Missing EC2_SSH_KEY repository secret"; exit 1; }
 
@@ -44,6 +45,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
         run: |
+          EC2_HOST="$(printf '%s' "$EC2_HOST" | tr -d '\r\n[:space:]')"
           ssh -i ~/.ssh/ec2_key.pem "$EC2_USER@$EC2_HOST" \
             "DEPLOY_DIR='$DEPLOY_DIR' \
              REPOSITORY='$REPOSITORY' \
