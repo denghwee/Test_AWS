@@ -1,0 +1,17 @@
+venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.sqlite
+*.sqlite3
+*.db
+fpt_customer_chatbot_api/.env
+.coverage
+screenshots/
+screenshots_fastapi/
+test_error.txt
+*.zip
+.git/
+.gitignore
+Dockerfile
+docker-compose.yml

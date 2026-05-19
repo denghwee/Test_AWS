@@ -1,0 +1,14 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: fastapi-customer-chatbot:latest
+    container_name: fastapi-customer-chatbot-api
+    env_file:
+      - ./fpt_customer_chatbot_api/.env
+    environment:
+      DATABASE_URL: sqlite:////app/fpt_chatbot.db
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
