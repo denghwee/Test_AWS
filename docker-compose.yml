@@ -9,6 +9,7 @@ services:
       - ./fpt_customer_chatbot_api/.env
     environment:
       DATABASE_URL: sqlite:////app/fpt_chatbot.db
+      ENABLE_AI_CHAT: "false"
     ports:
       - "8000:8000"
     restart: unless-stopped

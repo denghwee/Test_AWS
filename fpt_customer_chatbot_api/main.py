@@ -14,12 +14,12 @@ if services_dir not in sys.path:
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routers import auth, users, tickets, bookings, chat, files
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.responses import JSONResponse
 from .database import engine, Base
 from .config import settings
+from .routers import auth, users, tickets, bookings, files
 
 
 # Create database tables
@@ -61,8 +61,12 @@ app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["aut
 app.include_router(users.router, prefix=f"{settings.API_V1_STR}/users", tags=["users"])
 app.include_router(tickets.router, prefix=f"{settings.API_V1_STR}/tickets", tags=["tickets"])
 app.include_router(bookings.router, prefix=f"{settings.API_V1_STR}/bookings", tags=["bookings"])
-app.include_router(chat.router, prefix=f"{settings.API_V1_STR}/chat", tags=["chat"])
 app.include_router(files.router, prefix=f"{settings.API_V1_STR}/files", tags=["files"])
+
+if settings.ENABLE_AI_CHAT:
+    from .routers import chat
+
+    app.include_router(chat.router, prefix=f"{settings.API_V1_STR}/chat", tags=["chat"])
 
 @app.get("/")
 async def root():

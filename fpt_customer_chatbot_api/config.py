@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
     # ── AI / LangGraph ────────────────────────────────────────────────────────
+    ENABLE_AI_CHAT: bool = True
     OPENAI_API_KEY: str = ""
     TAVILY_API_KEY: str = ""
 

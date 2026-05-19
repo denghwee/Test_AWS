@@ -10,7 +10,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY fpt_customer_chatbot_api/requirements.txt ./requirements.txt
+COPY fpt_customer_chatbot_api/requirements-docker.txt ./requirements.txt
 RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
