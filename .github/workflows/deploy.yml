@@ -26,8 +26,12 @@ jobs:
           test -n "$EC2_SSH_KEY" || { echo "Missing EC2_SSH_KEY repository secret"; exit 1; }
 
           mkdir -p ~/.ssh
-          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2_key.pem
+          printf '%s\n' "$EC2_SSH_KEY" | sed 's/\\n/\n/g' | tr -d '\r' > ~/.ssh/ec2_key.pem
           chmod 600 ~/.ssh/ec2_key.pem
+          ssh-keygen -y -f ~/.ssh/ec2_key.pem > /dev/null || {
+            echo "Invalid EC2_SSH_KEY repository secret. Paste the full private .pem contents, not the file path or public key."
+            exit 1
+          }
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
 
       - name: Deploy on EC2
