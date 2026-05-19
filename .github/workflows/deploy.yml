@@ -109,5 +109,15 @@ jobs:
             up -d
 
           docker ps --filter "name=fastapi-customer-chatbot-api"
-          curl --fail http://localhost:8000/
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://localhost:8000/; then
+              echo
+              exit 0
+            fi
+            echo "Waiting for API to become ready... attempt ${attempt}/30"
+            sleep 2
+          done
+
+          docker logs --tail 100 fastapi-customer-chatbot-api
+          exit 1
           EOF
