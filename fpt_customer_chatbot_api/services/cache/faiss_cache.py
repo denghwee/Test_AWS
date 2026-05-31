@@ -128,8 +128,7 @@ def lookup_cache(query: str) -> Tuple[bool, Optional[str], Optional[float]]:
     if similarity >= SIMILARITY_THRESHOLD:
         cache_stats.record_hit()
         cached_response = metadata.get("response", "")
-        source = metadata.get("source_agent", "cache")
-        return True, f"📦 [Cached Response from {source}]\n{cached_response}", similarity
+        return True, cached_response, similarity
 
     cache_stats.record_miss()
     return False, None, None

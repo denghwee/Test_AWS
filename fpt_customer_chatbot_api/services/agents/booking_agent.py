@@ -7,6 +7,7 @@ from tools.booking_tools import booking_tools
 llm = ChatOpenAI(
     model="gpt-4o-mini",
     temperature=0,
+    streaming=True,
     api_key=os.getenv("OPENAI_API_KEY")
 )
 

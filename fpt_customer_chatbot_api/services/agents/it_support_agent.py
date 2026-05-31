@@ -8,6 +8,7 @@ from state.agent_state import CompleteOrEscalate
 llm = ChatOpenAI(
     model="gpt-4o-mini",
     temperature=0,
+    streaming=True,
     api_key=os.getenv("OPENAI_API_KEY")
 )
 

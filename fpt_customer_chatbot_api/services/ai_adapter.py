@@ -1,7 +1,7 @@
 import os
 import sys
 import uuid
-from typing import Dict, Any, List, Optional
+from typing import AsyncGenerator, Dict, Any, List, Optional
 
 # Add the current directory to sys.path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -10,16 +10,30 @@ if current_dir not in sys.path:
 
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from fpt_customer_chatbot_api.services.graph.builder import build_graph
-from fpt_customer_chatbot_api.services.persistence.checkpointer import get_sqlite_checkpointer
+from fpt_customer_chatbot_api.services.persistence.checkpointer import (
+    get_async_sqlite_checkpointer,
+    get_sqlite_checkpointer,
+)
 from fpt_customer_chatbot_api.services.cache.cache_manager import CacheManager
 from fpt_customer_chatbot_api.services.hitl.message_generator import extract_pending_tool_calls, generate_confirmation_message
 from fpt_customer_chatbot_api.services.hitl.confirmation import is_sensitive_tool_call
 from fpt_customer_chatbot_api.services.state.context_injection import inject_user_context
 
 class AIAdapter:
+    STREAMING_AGENT_NODES = {
+        "primary_assistant",
+        "ticket",
+        "booking",
+        "it_support",
+        "faq",
+    }
+
     def __init__(self):
         self.checkpointer = None
         self.graph = None
+        self.async_checkpointer_cm = None
+        self.async_checkpointer = None
+        self.async_graph = None
         self._initialize()
 
     def _initialize(self):
@@ -27,6 +41,13 @@ class AIAdapter:
         self.checkpointer_cm = get_sqlite_checkpointer()
         self.checkpointer = self.checkpointer_cm.__enter__()
         self.graph = build_graph(checkpointer=self.checkpointer)
+
+    async def _ensure_async_graph(self):
+        if self.async_graph is None:
+            self.async_checkpointer_cm = get_async_sqlite_checkpointer()
+            self.async_checkpointer = await self.async_checkpointer_cm.__aenter__()
+            self.async_graph = build_graph(checkpointer=self.async_checkpointer)
+        return self.async_graph
 
     async def process_message(self, message: str, conversation_id: str, user_info: Dict[str, Any] = None) -> Dict[str, Any]:
         """Send a message to the AI and handle the response or HITL interruption."""
@@ -45,6 +66,13 @@ class AIAdapter:
             
             # 3. Prepare Input
             if current_state.next:
+                # Check if the user is explicitly confirming or cancelling via text
+                user_text = message.strip().lower()
+                if user_text in ["y", "yes", "approve", "confirm", "ok"]:
+                    return await self.confirm_action(conversation_id, True)
+                elif user_text in ["n", "no", "cancel", "reject", "ignore"]:
+                    return await self.confirm_action(conversation_id, False)
+
                 # We have pending actions but the user sent a new message instead of confirming.
                 # We must "cancel" the pending tool calls by providing tool outputs before adding the new human message.
                 tool_calls = extract_pending_tool_calls(current_state)
@@ -52,10 +80,11 @@ class AIAdapter:
                     cancel_messages = [
                         ToolMessage(
                             tool_call_id=tc['id'], 
+                            name=tc.get('name', ''),
                             content="User chose to ignore this action and sent a new message."
                         ) for tc in tool_calls
                     ]
-                    self.graph.update_state(config, {"messages": cancel_messages})
+                    self.graph.update_state(config, {"messages": cancel_messages}, as_node=current_state.next[0])
                 input_data = {"messages": [HumanMessage(content=message)]}
             elif not current_state.values:
                 # Fresh start: inject context
@@ -95,6 +124,163 @@ class AIAdapter:
         except Exception as e:
             return {"response": f"Error: {str(e)}", "status": "error", "thread_id": conversation_id}
 
+    def get_conversation_history(self, conversation_id: str) -> Dict[str, Any]:
+        """Return public chat messages from a LangGraph checkpoint thread."""
+        config = {"configurable": {"thread_id": conversation_id}}
+        state = self.graph.get_state(config)
+        raw_messages = (state.values or {}).get("messages", [])
+        messages = []
+
+        for msg in raw_messages:
+            msg_type = getattr(msg, "type", "")
+            content = self._normalize_message_content(getattr(msg, "content", ""))
+            if not content:
+                continue
+
+            if msg_type == "human":
+                messages.append({"role": "user", "content": content})
+            elif msg_type == "ai":
+                messages.append({"role": "assistant", "content": content})
+
+        response = {
+            "conversation_id": conversation_id,
+            "messages": messages,
+            "status": "success",
+            "tool_calls": None,
+        }
+
+        if state.next:
+            tool_calls = extract_pending_tool_calls(state)
+            if tool_calls and is_sensitive_tool_call(tool_calls):
+                response["status"] = "pending_confirmation"
+                response["tool_calls"] = tool_calls
+                response["messages"].append({
+                    "role": "assistant",
+                    "content": generate_confirmation_message(tool_calls)
+                })
+
+        return response
+
+    async def stream_message(
+        self,
+        message: str,
+        conversation_id: str,
+        user_info: Dict[str, Any] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Stream model tokens while the graph runs, then emit final status metadata."""
+        config = {"configurable": {"thread_id": conversation_id}}
+        user_id = user_info.get("user_id", "default") if user_info else "default"
+        email = user_info.get("email", "user@fpt.com.vn") if user_info else "user@fpt.com.vn"
+
+        try:
+            graph = await self._ensure_async_graph()
+            yield {"event": "start", "data": {"thread_id": conversation_id}}
+
+            hit, cached_response, _ = CacheManager.check_and_return(message)
+            if hit:
+                yield {"event": "chunk", "data": {"text": cached_response}}
+                yield {
+                    "event": "done",
+                    "data": {
+                        "status": "success",
+                        "from_cache": True,
+                        "thread_id": conversation_id
+                    }
+                }
+                return
+
+            current_state = await graph.aget_state(config)
+
+            if current_state.next:
+                user_text = message.strip().lower()
+                if user_text in ["y", "yes", "approve", "confirm", "ok"]:
+                    async for event in self.stream_confirm_action(conversation_id, True):
+                        yield event
+                    return
+                elif user_text in ["n", "no", "cancel", "reject", "ignore"]:
+                    async for event in self.stream_confirm_action(conversation_id, False):
+                        yield event
+                    return
+
+                tool_calls = extract_pending_tool_calls(current_state)
+                if tool_calls:
+                    cancel_messages = [
+                        ToolMessage(
+                            tool_call_id=tc['id'],
+                            name=tc.get('name', ''),
+                            content="User chose to ignore this action and sent a new message."
+                        ) for tc in tool_calls
+                    ]
+                    await graph.aupdate_state(config, {"messages": cancel_messages}, as_node=current_state.next[0])
+                input_data = {"messages": [HumanMessage(content=message)]}
+            elif not current_state.values:
+                input_data = inject_user_context(
+                    {},
+                    user_id=str(user_id),
+                    email=email,
+                    conversation_id=conversation_id,
+                    metadata=user_info.get("metadata", {}) if user_info else {}
+                )
+                input_data["messages"] = [HumanMessage(content=message)]
+            else:
+                input_data = {"messages": [HumanMessage(content=message)]}
+
+            streamed_text = []
+            async for event in graph.astream_events(input_data, config, version="v2"):
+                if event.get("event") != "on_chat_model_stream":
+                    continue
+                if event.get("metadata", {}).get("langgraph_node") not in self.STREAMING_AGENT_NODES:
+                    continue
+
+                text = self._get_stream_chunk_text(event.get("data", {}).get("chunk"))
+                if not text:
+                    continue
+
+                streamed_text.append(text)
+                yield {"event": "chunk", "data": {"text": text}}
+
+            state = await graph.aget_state(config)
+            if state.next:
+                tool_calls = extract_pending_tool_calls(state)
+                if tool_calls and is_sensitive_tool_call(tool_calls):
+                    confirmation_msg = generate_confirmation_message(tool_calls)
+                    yield {
+                        "event": "hitl",
+                        "data": {
+                            "response": confirmation_msg,
+                            "status": "pending_confirmation",
+                            "tool_calls": tool_calls,
+                            "thread_id": conversation_id
+                        }
+                    }
+                    return
+
+            response_text = self._get_response_text(state.values or {})
+            if response_text and not streamed_text:
+                yield {"event": "chunk", "data": {"text": response_text}}
+
+            if response_text:
+                CacheManager.store(message, response_text)
+
+            yield {
+                "event": "done",
+                "data": {
+                    "status": "success",
+                    "thread_id": conversation_id,
+                    "from_cache": False
+                }
+            }
+
+        except Exception as e:
+            yield {
+                "event": "error",
+                "data": {
+                    "response": f"Error: {str(e)}",
+                    "status": "error",
+                    "thread_id": conversation_id
+                }
+            }
+
     async def confirm_action(self, conversation_id: str, confirm: bool) -> Dict[str, Any]:
         """Resume the graph after a HITL interruption."""
         config = {"configurable": {"thread_id": conversation_id}}
@@ -113,17 +299,118 @@ class AIAdapter:
                 tool_output = [
                     ToolMessage(
                         tool_call_id=tc['id'], 
+                        name=tc.get('name', ''),
                         content="Action cancelled by user."
                     ) for tc in tool_calls
                 ]
-                self.graph.update_state(config, {"messages": tool_output})
+                self.graph.update_state(config, {"messages": tool_output}, as_node=state.next[0])
                 result = self.graph.invoke(None, config)
+
+            # Check if there's another HITL interruption immediately after
+            new_state = self.graph.get_state(config)
+            if new_state.next:
+                new_tool_calls = extract_pending_tool_calls(new_state)
+                if new_tool_calls and is_sensitive_tool_call(new_tool_calls):
+                    confirmation_msg = generate_confirmation_message(new_tool_calls)
+                    return {
+                        "response": confirmation_msg,
+                        "status": "pending_confirmation",
+                        "tool_calls": new_tool_calls,
+                        "thread_id": conversation_id
+                    }
 
             response_text = self._get_response_text(result)
             return {"response": response_text, "status": "success", "thread_id": conversation_id}
 
         except Exception as e:
             return {"response": f"Confirmation Error: {str(e)}", "status": "error", "thread_id": conversation_id}
+
+    async def stream_confirm_action(
+        self,
+        conversation_id: str,
+        confirm: bool
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Stream model tokens while resuming a graph after a HITL decision."""
+        config = {"configurable": {"thread_id": conversation_id}}
+
+        try:
+            graph = await self._ensure_async_graph()
+            yield {"event": "start", "data": {"thread_id": conversation_id}}
+
+            state = await graph.aget_state(config)
+            if not state.next:
+                yield {
+                    "event": "error",
+                    "data": {
+                        "response": "No pending action found.",
+                        "status": "error",
+                        "thread_id": conversation_id
+                    }
+                }
+                return
+
+            if not confirm:
+                tool_calls = extract_pending_tool_calls(state)
+                tool_output = [
+                    ToolMessage(
+                        tool_call_id=tc['id'],
+                        name=tc.get('name', ''),
+                        content="Action cancelled by user."
+                    ) for tc in tool_calls
+                ]
+                await graph.aupdate_state(config, {"messages": tool_output}, as_node=state.next[0])
+
+            streamed_text = []
+            async for event in graph.astream_events(None, config, version="v2"):
+                if event.get("event") != "on_chat_model_stream":
+                    continue
+                if event.get("metadata", {}).get("langgraph_node") not in self.STREAMING_AGENT_NODES:
+                    continue
+
+                text = self._get_stream_chunk_text(event.get("data", {}).get("chunk"))
+                if not text:
+                    continue
+
+                streamed_text.append(text)
+                yield {"event": "chunk", "data": {"text": text}}
+
+            new_state = await graph.aget_state(config)
+            if new_state.next:
+                new_tool_calls = extract_pending_tool_calls(new_state)
+                if new_tool_calls and is_sensitive_tool_call(new_tool_calls):
+                    confirmation_msg = generate_confirmation_message(new_tool_calls)
+                    yield {
+                        "event": "hitl",
+                        "data": {
+                            "response": confirmation_msg,
+                            "status": "pending_confirmation",
+                            "tool_calls": new_tool_calls,
+                            "thread_id": conversation_id
+                        }
+                    }
+                    return
+
+            response_text = self._get_response_text(new_state.values or {})
+            if response_text and not streamed_text:
+                yield {"event": "chunk", "data": {"text": response_text}}
+
+            yield {
+                "event": "done",
+                "data": {
+                    "status": "success",
+                    "thread_id": conversation_id
+                }
+            }
+
+        except Exception as e:
+            yield {
+                "event": "error",
+                "data": {
+                    "response": f"Confirmation Error: {str(e)}",
+                    "status": "error",
+                    "thread_id": conversation_id
+                }
+            }
 
     def _get_response_text(self, result: dict) -> str:
         messages = result.get("messages", [])
@@ -132,6 +419,23 @@ class AIAdapter:
             if hasattr(msg, "content") and msg.content and getattr(msg, "type", "") != "tool":
                 return msg.content
         return "Process completed."
+
+    def _get_stream_chunk_text(self, chunk: Any) -> str:
+        content = getattr(chunk, "content", "")
+        return self._normalize_message_content(content)
+
+    def _normalize_message_content(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    parts.append(item.get("text", ""))
+            return "".join(parts)
+        return ""
 
 # Singleton instance
 ai_adapter = AIAdapter()

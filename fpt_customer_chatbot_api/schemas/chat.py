@@ -9,6 +9,12 @@ class ChatMessage(BaseModel):
     role: str
     content: str
 
+class ConversationHistoryResponse(BaseModel):
+    conversation_id: str
+    messages: List[ChatMessage]
+    status: str = "success"
+    tool_calls: Optional[List[Any]] = None
+
 class ChatResponse(BaseModel):
     response: str
     status: str

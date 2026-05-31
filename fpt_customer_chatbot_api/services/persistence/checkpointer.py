@@ -1,12 +1,11 @@
 """
 Checkpointer Configuration
 
-Configures persistent state storage using SqliteSaver for
+Configures persistent state storage using SQLite checkpointers for
 conversation resumption across process restarts.
 """
 
 import os
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.checkpoint.memory import MemorySaver
 
 
@@ -49,4 +48,18 @@ def get_sqlite_checkpointer():
 
         The API is identical — just swap the import and connection string.
     """
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
     return SqliteSaver.from_conn_string(DB_PATH)
+
+
+def get_async_sqlite_checkpointer():
+    """
+    Get an async SQLite-based checkpointer for LangGraph async streaming APIs.
+
+    AsyncSqliteSaver requires `aiosqlite` and must be used with `async with`
+    or `await cm.__aenter__()`.
+    """
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    return AsyncSqliteSaver.from_conn_string(DB_PATH)
